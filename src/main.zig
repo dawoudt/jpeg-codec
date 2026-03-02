@@ -43,8 +43,6 @@ pub fn main(init: std.process.Init) !void {
                         var end: usize = 5;
                         const identifier = out[start..end]; // null terminated
                         std.debug.print("\tidentifier: {s}\n", .{identifier});
-                        const JFIF = [5]u8{ 0x4A, 0x46, 0x49, 0x46, 0x00 };
-                        const JFXX = [5]u8{ 0x4A, 0x46, 0x58, 0x58, 0x00 };
 
                         if (std.mem.eql(u8, identifier, &JFIF)) { // JFIF
                             start = end;
@@ -142,6 +140,16 @@ pub fn main(init: std.process.Init) !void {
                     const out = try read_payload(file_reader_intf, &buf);
                     std.debug.print("Start of scan {d}: {any}\n\n", .{ sos_num, out });
                 },
+                SOF0 => {
+                    var buf: [4096]u8 = undefined;
+                    const out = try read_payload(file_reader_intf, &buf);
+                    std.debug.print("Start of Frame: {any}\n\n", .{out});
+                },
+                SOF2 => {
+                    var buf: [4096]u8 = undefined;
+                    const out = try read_payload(file_reader_intf, &buf);
+                    std.debug.print("Start of Frame 2: {any}\n\n", .{out});
+                },
 
                 else => {
                     std.debug.print("UNHANDLED MARKER: {X:0>2}\n", .{next_byte});
@@ -172,3 +180,8 @@ const COM = 0xFE; // Comments
 const DHT = 0xC4; // Define Huffman Table
 const DQT = 0xDB; // Define Quantization Table
 const SOS = 0xDA; // Start of scan
+const SOF0 = 0xC0; // Start of Frame
+const SOF2 = 0xC2; // Start of Frame
+
+const JFIF = [5]u8{ 0x4A, 0x46, 0x49, 0x46, 0x00 }; // JFIF\0
+const JFXX = [5]u8{ 0x4A, 0x46, 0x58, 0x58, 0x00 }; // JFXX\0
