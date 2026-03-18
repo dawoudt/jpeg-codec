@@ -1,0 +1,5 @@
+.zed
+.zig-cache
+scratch.zig
+zig-out
+.gitignore
