@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
         const byte = try file_reader_intf.takeByte();
         if (byte == MARKER) {
             const next_byte = try file_reader_intf.takeByte();
-            std.log.debug("{X}:\n", .{MARKER});
+            std.log.debug("Marker: {X}:\n", .{MARKER});
             if (0xF & (next_byte >> 4) == 0xE) { // APP MARKER
                 switch (0xF & next_byte) {
                     0x0 => { // APP0
@@ -109,13 +109,13 @@ pub fn main(init: std.process.Init) !void {
             }
             switch (next_byte) {
                 FILL => continue,
-                SOI => std.debug.print("SOI[{X}]\n", .{next_byte}),
+                SOI => std.debug.print("SOI: {X}\n", .{next_byte}),
                 EOI => {
-                    std.debug.print("EOI[{X}]\n", .{next_byte});
+                    std.debug.print("EOI: {X}\n", .{next_byte});
                     return std.process.cleanExit(io);
                 },
                 BYTE_STUFFING => {
-                    std.log.debug("Stuffing: [{X}]", .{next_byte});
+                    std.log.debug("Stuffing: {X}", .{next_byte});
                 },
                 COM => {
                     var buf: [1024]u8 = undefined;
@@ -125,20 +125,22 @@ pub fn main(init: std.process.Init) !void {
                 DHT => {
                     dht_num += 1;
                     var buf: [4096]u8 = undefined;
-                    const out = try read_payload(file_reader_intf, &buf);
-                    std.debug.print("Define Huffman Table {d}: {any}\n\n", .{ dht_num, out });
+                    const dht: HuffmanTable = try .init(dht_num, file_reader_intf, &buf);
+                    dht.print();
                 },
                 DQT => {
                     dqt_num += 1;
                     var buf: [4096]u8 = undefined;
                     const out = try read_payload(file_reader_intf, &buf);
-                    std.debug.print("Define Quantization Table {d}: {any}\n\n", .{ dqt_num, out });
+                    std.debug.print("Define Quantization Table {d}: \n", .{dqt_num});
+                    print_bytes(out, .small_hex);
                 },
                 SOS => {
                     sos_num += 1;
                     var buf: [4096]u8 = undefined;
                     const out = try read_payload(file_reader_intf, &buf);
-                    std.debug.print("Start of scan {d}: {any}\n\n", .{ sos_num, out });
+                    std.debug.print("Start of scan {d}: \n", .{sos_num});
+                    print_bytes(out, .small_hex);
                 },
                 SOF0 => {
                     var buf: [4096]u8 = undefined;
@@ -189,8 +191,8 @@ pub fn main(init: std.process.Init) !void {
                         start = end;
                         end = start + 1;
                         const sample: u8 = @intCast(out[start]);
-                        const horizontal_sample = sample & 0xF;
-                        const vertical_sample = (sample >> 4) & 0xF;
+                        const vertical_sample = sample & 0xF;
+                        const horizontal_sample = (sample >> 4) & 0xF;
                         start = end;
                         end = start + 1;
                         const dct_tbl_num: u8 = @intCast(out[start]);
@@ -221,6 +223,48 @@ fn read_payload(reader: *std.Io.Reader, buf: []u8) ![]u8 {
     return buf[0..payload_len];
 }
 
+fn print_bytes(str: []u8, comptime fmt: ByteRepresentation) void {
+    std.debug.print("\t", .{});
+    for (str) |b| {
+        switch (fmt) {
+            .small_hex, .big_hex => std.debug.print("{" ++ [_]u8{@intFromEnum(fmt)} ++ ":0>2} ", .{b}),
+            else => std.debug.print("{" ++ [_]u8{@intFromEnum(fmt)} ++ "} ", .{b}),
+        }
+    }
+    std.debug.print("\n\n", .{});
+}
+
+const HuffmanTable = struct {
+    num: usize,
+    len: u16,
+    data: []u8,
+
+    pub fn init(num: usize, reader: *std.Io.Reader, buf: []u8) !HuffmanTable {
+        const s1: u8 = try reader.takeByte();
+        const s2: u8 = try reader.takeByte();
+        const len: u16 = std.mem.readInt(u16, &[2]u8{ s1, s2 }, .big);
+        const payload_len = len - 2;
+        std.log.debug("payload length: {d}", .{payload_len});
+        try reader.readSliceAll(buf[0..payload_len]);
+        return .{
+            .num = num,
+            .len = len,
+            .data = buf[0..payload_len],
+        };
+    }
+
+    pub fn print(self: HuffmanTable) void {
+        std.debug.print("Huffman Table {d}: \n", .{self.num});
+        print_bytes(self.data, .small_hex);
+    }
+};
+
+const ByteRepresentation = enum(u8) {
+    small_hex = 'x',
+    big_hex = 'X',
+    decimal = 'd',
+};
+
 const MARKER = 0xFF;
 const SOI = 0xD8; // start of image
 const EOI = 0xD9; // end of image
@@ -237,7 +281,7 @@ const JFIF = [5]u8{ 0x4A, 0x46, 0x49, 0x46, 0x00 }; // JFIF\0
 const JFXX = [5]u8{ 0x4A, 0x46, 0x58, 0x58, 0x00 }; // JFXX\0
 
 const Component = enum(u3) {
-    Luminence = 1,
+    Luminance = 1,
     BlueChroma = 2,
     RedChroma = 3,
 };
