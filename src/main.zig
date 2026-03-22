@@ -2,10 +2,37 @@ const std = @import("std");
 
 pub const std_options: std.Options = .{ .log_level = .info };
 
+const ByteRepresentation = enum(u8) {
+    small_hex = 'x',
+    big_hex = 'X',
+    decimal = 'd',
+};
+
+const MARKER = 0xFF;
+const SOI = 0xD8; // start of image
+const EOI = 0xD9; // end of image
+const FILL = 0xFF;
+const BYTE_STUFFING = 0x00; // Fill inside entropy-coded scan data
+const COM = 0xFE; // Comments
+const DHT = 0xC4; // Define Huffman Table
+const DQT = 0xDB; // Define Quantization Table
+const SOS = 0xDA; // Start of scan
+const SOF0 = 0xC0; // Start of Frame
+const SOF2 = 0xC2; // Start of Frame 2
+
+const JFIF = [5]u8{ 0x4A, 0x46, 0x49, 0x46, 0x00 }; // JFIF\0
+const JFXX = [5]u8{ 0x4A, 0x46, 0x58, 0x58, 0x00 }; // JFXX\0
+
+const Component = enum(u3) {
+    Luminance = 1,
+    BlueChroma = 2,
+    RedChroma = 3,
+};
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    var args_buffer: [2048]u8 = undefined;
-    var fba: std.heap.FixedBufferAllocator = .init(&args_buffer);
+    var alloc_buffer: [1024 * 100]u8 = undefined;
+    var fba: std.heap.FixedBufferAllocator = .init(&alloc_buffer);
     const alloc = fba.threadSafeAllocator();
     const args = try init.minimal.args.toSlice(alloc);
 
@@ -125,8 +152,10 @@ pub fn main(init: std.process.Init) !void {
                 DHT => {
                     dht_num += 1;
                     var buf: [4096]u8 = undefined;
-                    const dht: HuffmanTable = try .init(dht_num, file_reader_intf, &buf);
+                    var dht: HuffmanTable = try .init(dht_num, file_reader_intf, &buf, alloc);
+                    defer dht.deinit();
                     dht.print();
+                    // dht.print_table();
                 },
                 DQT => {
                     dqt_num += 1;
@@ -224,7 +253,7 @@ fn read_payload(reader: *std.Io.Reader, buf: []u8) ![]u8 {
 }
 
 fn print_bytes(str: []u8, comptime fmt: ByteRepresentation) void {
-    std.debug.print("\t", .{});
+    std.debug.print("\tRaw: ", .{});
     for (str) |b| {
         switch (fmt) {
             .small_hex, .big_hex => std.debug.print("{" ++ [_]u8{@intFromEnum(fmt)} ++ ":0>2} ", .{b}),
@@ -235,53 +264,119 @@ fn print_bytes(str: []u8, comptime fmt: ByteRepresentation) void {
 }
 
 const HuffmanTable = struct {
-    num: usize,
-    len: u16,
-    data: []u8,
+    tbl_num: usize,
+    data_len: u16,
+    data_raw: []u8,
 
-    pub fn init(num: usize, reader: *std.Io.Reader, buf: []u8) !HuffmanTable {
+    class: u4,
+    dst_id: u4,
+    counts: [16]u8,
+    symbols: []u8,
+    table: std.AutoHashMap(u32, u8),
+
+    pub fn deinit(self: *HuffmanTable) void {
+        self.table.deinit();
+    }
+
+    pub fn init(num: usize, reader: *std.Io.Reader, buf: []u8, allocator: std.mem.Allocator) !HuffmanTable {
         const s1: u8 = try reader.takeByte();
         const s2: u8 = try reader.takeByte();
         const len: u16 = std.mem.readInt(u16, &[2]u8{ s1, s2 }, .big);
         const payload_len = len - 2;
-        std.log.debug("payload length: {d}", .{payload_len});
         try reader.readSliceAll(buf[0..payload_len]);
-        return .{
-            .num = num,
-            .len = len,
-            .data = buf[0..payload_len],
+        return initFromPayload(num, buf[0..payload_len], allocator);
+    }
+
+    pub fn initFromPayload(num: usize, data: []u8, allocator: std.mem.Allocator) !HuffmanTable {
+        var num_of_symbols: usize = 0;
+        for (data[1..17]) |s| num_of_symbols += s;
+
+        var ht: HuffmanTable = .{
+            .tbl_num = num,
+            .data_len = @intCast(data.len + 2),
+            .data_raw = data,
+            .class = @truncate(data[0] >> 4),
+            .dst_id = @truncate(data[0] & 0x0F),
+            .counts = data[1..17].*,
+            .symbols = data[17 .. 17 + num_of_symbols],
+            .table = std.AutoHashMap(u32, u8).init(allocator),
         };
+        try ht.build_table();
+        return ht;
+    }
+
+    fn build_table(self: *HuffmanTable) !void {
+        // TODO: Maybe Use ArrayList(.{.code, .value}) instead so its ordered.
+        // Although then it would be O(N) instead of O(1)
+        var code: u32 = 0;
+        var symbol_idx: usize = 0; // this is global as we need to remember what we've proccesed.
+        for (self.counts) |length| { // each item from the counts array is the length for the symbols sub set
+            for (0..length) |_| { // iterate over the subset from 0 to length
+                const symbol = self.symbols[symbol_idx]; // grab the symbol at the symbol_idx
+                try self.table.put(code, symbol); // add it to the table
+                code += 1; // increment the code
+                symbol_idx += 1; // increment the symbol_idx
+                std.log.debug("code += 1: {d}\n", .{code});
+            }
+            code = code << 1; // when we move to next count, we shift left (or append 0 to the right);
+            std.log.debug("code = code << 1: {d}\n", .{code});
+        }
+    }
+
+    fn print_table(self: HuffmanTable) void {
+        var it = self.table.iterator();
+        std.debug.print("-------------------Huffman Table--------------------\n", .{});
+        while (it.next()) |entry| {
+            std.debug.print("\tCode: {d:>5} | symbol: {d}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+        }
     }
 
     pub fn print(self: HuffmanTable) void {
-        std.debug.print("Huffman Table {d}: \n", .{self.num});
-        print_bytes(self.data, .small_hex);
+        std.debug.print("Huffman Table {d}: \n", .{self.tbl_num});
+        std.debug.print("\tClass table: {d}\n\tTable Destination ID: {d}\n", .{ self.class, self.dst_id });
+        std.debug.print("\tCounts: {any}\n", .{self.counts});
+        std.debug.print("\tSymbols: {any}\n", .{self.symbols});
+
+        print_bytes(self.data_raw, .small_hex);
+        if (std_options.log_level == .info) self.print_table();
     }
 };
 
-const ByteRepresentation = enum(u8) {
-    small_hex = 'x',
-    big_hex = 'X',
-    decimal = 'd',
-};
+test "parse DC luminance huffman table" {
+    var payload = [_]u8{
+        0x00, // class=0 (DC), dest=0
+        0x00,
+        0x01,
+        0x05,
+        0x01,
+        0x01,
+        0x01,
+        0x01,
+        0x01,
+        0x01,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x01,
+        0x02,
+        0x03,
+        0x04,
+        0x05,
+        0x06,
+        0x07,
+        0x08,
+        0x09,
+        0x0A,
+        0x0B,
+    };
 
-const MARKER = 0xFF;
-const SOI = 0xD8; // start of image
-const EOI = 0xD9; // end of image
-const FILL = 0xFF;
-const BYTE_STUFFING = 0x00; // Fill inside entropy-coded scan data
-const COM = 0xFE; // Comments
-const DHT = 0xC4; // Define Huffman Table
-const DQT = 0xDB; // Define Quantization Table
-const SOS = 0xDA; // Start of scan
-const SOF0 = 0xC0; // Start of Frame
-const SOF2 = 0xC2; // Start of Frame 2
+    var ht: HuffmanTable = try .initFromPayload(0, &payload, std.testing.allocator);
+    defer ht.deinit();
 
-const JFIF = [5]u8{ 0x4A, 0x46, 0x49, 0x46, 0x00 }; // JFIF\0
-const JFXX = [5]u8{ 0x4A, 0x46, 0x58, 0x58, 0x00 }; // JFXX\0
-
-const Component = enum(u3) {
-    Luminance = 1,
-    BlueChroma = 2,
-    RedChroma = 3,
-};
+    try std.testing.expectEqual(@as(usize, 12), ht.table.count());
+}
