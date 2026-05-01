@@ -29,9 +29,10 @@ const Component = enum(u3) {
     RedChroma = 3,
 };
 
+var alloc_buffer: [1024 * 1024 * 20]u8 = undefined;
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    var alloc_buffer: [1024 * 100]u8 = undefined;
     var fba: std.heap.FixedBufferAllocator = .init(&alloc_buffer);
     const alloc = fba.threadSafeAllocator();
     const args = try init.minimal.args.toSlice(alloc);
@@ -68,57 +69,41 @@ pub fn main(init: std.process.Init) !void {
                         var buf: [1024]u8 = undefined;
                         const out = try read_payload(file_reader_intf, &buf);
                         std.debug.print("APP{d}:\n", .{0xF & next_byte});
+                        var c = std.Io.Reader.fixed(out);
 
-                        var start: usize = 0;
-                        var end: usize = 5;
-                        const identifier = out[start..end]; // null terminated
+                        const identifier = try c.take(5); // null terminated
                         std.debug.print("\tidentifier: {s}\n", .{identifier});
 
                         if (std.mem.eql(u8, identifier, &JFIF)) { // JFIF
-                            start = end;
-                            end = start + 2;
-                            const version_bytes = out[start..end];
+                            const version_bytes = try c.take(2);
                             const major: u8 = version_bytes[0];
                             const minor: u8 = version_bytes[1];
                             std.debug.print("\tversion: {d}.{d:0>2}\n", .{ major, minor });
 
-                            start = end;
-                            end = start + 1;
-                            const density = out[start..end];
+                            const density = try c.takeByte();
                             std.debug.print("\tdensity: {x}\n", .{density});
 
-                            start = end;
-                            end = start + 2;
-                            const Xdensity_bytes = out[start..end];
-                            const Xdensity = std.mem.readInt(u16, Xdensity_bytes[0..2], .big);
+                            const Xdensity = try c.takeInt(u16, .big);
                             std.debug.print("\tXdensity: {d}: (hex: {X})\n", .{ Xdensity, Xdensity });
 
-                            start = end;
-                            end = start + 2;
-                            const Ydensity_bytes = out[start..end];
-                            const Ydensity = std.mem.readInt(u16, Ydensity_bytes[0..2], .big);
+                            const Ydensity = try c.takeInt(u16, .big);
                             std.debug.print("\tYdensity: {d} (hex: {X})\n", .{ Ydensity, Ydensity });
 
-                            start = end;
-                            end = start + 1;
-                            const Xthumbnail_bytes = out[start..end];
-                            const Xthumbnail = std.mem.readInt(u8, Xthumbnail_bytes[0..1], .big);
+                            const Xthumbnail = try c.takeByte();
                             std.debug.print("\tXthumbnail: {d}\n", .{Xthumbnail});
 
-                            start = end;
-                            end = start + 1;
-                            const Ythumbnail_bytes = out[start..end];
-                            const Ythumbnail = std.mem.readInt(u8, Ythumbnail_bytes[0..1], .big);
+                            const Ythumbnail = try c.takeByte();
                             std.debug.print("\tYthumbnail: {d}\n", .{Ythumbnail});
 
                             // Thumbnail data
                             // Uncompressed 24 bit RGB (8 bits per color channel) raster thumbnail data in the order R0, G0, B0, ... Rn-1, Gn-1, Bn-1;
                             // n = Xthumbnail × Ythumbnail
                             // 3 × n
-                            if ((Xthumbnail != 0 and Ythumbnail != 0)) {
-                                start = end;
-                                end = start + (Xthumbnail * Ythumbnail) * 3;
-                                const thumbnail_bytes = out[start..end];
+                            if (Xthumbnail != 0 and Ythumbnail != 0) {
+                                // start = end;
+                                // end = start + (Xthumbnail * Ythumbnail) * 3;
+                                const n: usize = @as(usize, Xthumbnail) * @as(usize, Ythumbnail) * 3;
+                                const thumbnail_bytes = try c.take(n);
                                 std.debug.print("Thumbnail bytes: [{x}]", .{thumbnail_bytes});
                             }
                         } else if (std.mem.eql(u8, identifier, &JFXX)) { // JFXX
@@ -186,48 +171,33 @@ pub fn main(init: std.process.Init) !void {
                     var buf: [4096]u8 = undefined;
                     const out = try read_payload(file_reader_intf, &buf);
                     std.debug.print("Start of Frame 2: \n", .{});
+                    var c = std.Io.Reader.fixed(out);
+
                     // for (out) |value| {
                     //     std.debug.print("{X:0>2} ", .{value});
                     // }
                     // std.debug.print("\n", .{});
-                    var start: usize = 0;
-                    var end: usize = start + 1;
 
-                    const precision: u8 = @intCast(out[start]);
+                    const precision = try c.takeByte();
                     std.debug.print("\tPrecision: {d}\n", .{precision});
 
-                    start = end;
-                    end = start + 2;
-                    const height_bytes: []u8 = out[start..end];
-                    const height: u16 = std.mem.readInt(u16, height_bytes[0..2], .big);
+                    const height = try c.takeInt(u16, .big);
                     std.debug.print("\tHeight: {d}\n", .{height});
 
-                    start = end;
-                    end = start + 2;
-                    const width_bytes: []u8 = out[start..end];
-                    const width: u16 = std.mem.readInt(u16, width_bytes[0..2], .big);
+                    const width = try c.takeInt(u16, .big);
                     std.debug.print("\tWidth: {d}\n", .{width});
 
-                    start = end;
-                    end = start + 1;
-
-                    const num_of_components: u8 = @intCast(out[start]);
+                    const num_of_components = try c.takeByte();
                     std.debug.print("\tNumber of Components: {d}\n", .{num_of_components});
                     var component_counter: usize = 0;
                     while (component_counter < num_of_components) : (component_counter += 1) {
-                        start = end;
-                        end = start + 1;
-                        const component_id: u8 = @intCast(out[start]);
+                        const component_id = try c.takeByte();
                         const component: Component = @enumFromInt(component_id);
 
-                        start = end;
-                        end = start + 1;
-                        const sample: u8 = @intCast(out[start]);
+                        const sample = try c.takeByte();
                         const vertical_sample = sample & 0xF;
                         const horizontal_sample = (sample >> 4) & 0xF;
-                        start = end;
-                        end = start + 1;
-                        const dct_tbl_num: u8 = @intCast(out[start]);
+                        const dct_tbl_num = try c.takeByte();
                         std.debug.print("\t    Component: {s}\n\t    Horizontal sample: {d}\n\t    Vertical sample: {d}\n\t    Qunatization Table: {d}\n\n", .{
                             @tagName(component),
                             horizontal_sample,

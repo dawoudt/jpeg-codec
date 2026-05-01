@@ -1,7 +1,7 @@
 .{
-    .name = .jpeg_viewer,
+    .name = .jpeg_codec,
     .version = "0.0.1",
-    .minimum_zig_version = "0.16.0-dev.2565+684032671",
+    .minimum_zig_version = "0.16.0",
     .paths = .{""},
     .fingerprint = 0x846c03291788f894,
 }
